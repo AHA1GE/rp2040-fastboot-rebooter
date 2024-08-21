@@ -39,16 +39,16 @@ endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("C:/Users/Harry/Downloads/pico-fastboot-rebooter/fastboot_rebooter/build/pico-sdk/tools/cmake_install.cmake")
+  include("C:/Users/Harry/Documents/GitHub/rp2040-fastboot-rebooter/build/pico-sdk/tools/cmake_install.cmake")
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("C:/Users/Harry/Downloads/pico-fastboot-rebooter/fastboot_rebooter/build/pico-sdk/src/cmake_install.cmake")
+  include("C:/Users/Harry/Documents/GitHub/rp2040-fastboot-rebooter/build/pico-sdk/src/cmake_install.cmake")
 endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
-  include("C:/Users/Harry/Downloads/pico-fastboot-rebooter/fastboot_rebooter/build/pico-sdk/docs/cmake_install.cmake")
+  include("C:/Users/Harry/Documents/GitHub/rp2040-fastboot-rebooter/build/pico-sdk/docs/cmake_install.cmake")
 endif()
 
