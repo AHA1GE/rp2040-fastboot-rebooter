@@ -199,10 +199,19 @@ void send_fastboot_cmd(uint8_t dev_addr, uint8_t ep_addr, const char *cmd, uint3
     }
     else
     {
-        printf("Failed to send fastboot command to device %d's endpoint 0x%02x. Data:\n", dev_addr, ep_addr);
-        printf("daddr: %d, ep_addr: %d, result: %d, actual_len: %d, buffer: %s, buflen: %lu\n",
-               xfer.daddr, xfer.ep_addr, xfer.result, xfer.actual_len,
-               (char *)xfer.buffer, (unsigned long)xfer.buflen);
+        printf("Failed to send fastboot command to device %d's endpoint 0x%02x, skipping.\n", dev_addr, ep_addr);
+
+        // No completion callback will fire on failure, so advance the index and
+        // dispatch the next command here to avoid stalling the sequence.
+        g_cmd_index++;
+        if (g_cmd_index < g_cmd_count)
+        {
+            send_fastboot_cmd(g_dev_addr, g_ep_addr, g_cmds[g_cmd_index], strlen(g_cmds[g_cmd_index]));
+        }
+        else
+        {
+            printf("All fastboot commands executed.\n");
+        }
     }
 }
 
