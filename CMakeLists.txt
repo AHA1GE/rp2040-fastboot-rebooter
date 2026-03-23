@@ -46,6 +46,14 @@ project(fastboot_rebooter C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
+# Embed FASTBOOTCMDS.txt as a C string in a generated header at configure time
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/FASTBOOTCMDS.txt" FASTBOOT_CMDS_RAW)
+string(REPLACE "\\" "\\\\" FASTBOOT_CMDS_ESC "${FASTBOOT_CMDS_RAW}")
+string(REPLACE "\"" "\\\"" FASTBOOT_CMDS_ESC "${FASTBOOT_CMDS_ESC}")
+string(REPLACE "\r" ""     FASTBOOT_CMDS_ESC "${FASTBOOT_CMDS_ESC}")
+string(REPLACE "\n" "\\n"  FASTBOOT_CMDS_ESC "${FASTBOOT_CMDS_ESC}")
+configure_file(fastboot_cmds.h.in "${CMAKE_CURRENT_BINARY_DIR}/fastboot_cmds.h" @ONLY)
+
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(fastboot_rebooter fastboot_rebooter.c )
@@ -67,6 +75,7 @@ target_include_directories(fastboot_rebooter PRIVATE
   ${PICO_SDK_PATH}/lib/tinyusb/src # Include TinyUSB include directories
   ${CMAKE_CURRENT_LIST_DIR}
   ${CMAKE_CURRENT_LIST_DIR}/.. # for our common lwipopts or any other standard includes, if required
+  ${CMAKE_CURRENT_BINARY_DIR} # for generated fastboot_cmds.h
 )
 
 pico_add_extra_outputs(fastboot_rebooter)
