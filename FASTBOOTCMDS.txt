@@ -1,2 +1,2 @@
-fastboot oem set-gpu-preemption 0 androidboot.selinux=permissive
-fastboot continue
+oem set-gpu-preemption 0 androidboot.selinux=permissive
+continue
