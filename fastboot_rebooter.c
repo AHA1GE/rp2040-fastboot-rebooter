@@ -6,6 +6,10 @@
 #define MAX_CMDS    32
 #define MAX_CMD_LEN 256
 
+// Delay between consecutive fastboot commands (milliseconds).
+// Edit this value before building to change the inter-command pause.
+#define CMD_DELAY_MS 2000
+
 // Parsed commands loaded from the embedded FASTBOOTCMDS.txt content
 static char g_cmds[MAX_CMDS][MAX_CMD_LEN];
 static int  g_cmd_count = 0;
@@ -14,6 +18,12 @@ static int  g_cmd_count = 0;
 static uint8_t g_dev_addr  = 0;
 static uint8_t g_ep_addr   = 0;
 static int     g_cmd_index = 0;
+
+// Non-blocking inter-command delay state.
+// When g_cmd_pending is true the main loop waits until g_next_cmd_time
+// before dispatching g_cmds[g_cmd_index].
+static volatile bool            g_cmd_pending   = false;
+static volatile absolute_time_t g_next_cmd_time;
 
 // Forward declarations
 void send_fastboot_cmd(uint8_t dev_addr, uint8_t ep_addr, const char *cmd, uint32_t cmd_len);
@@ -215,7 +225,8 @@ void send_fastboot_cmd(uint8_t dev_addr, uint8_t ep_addr, const char *cmd, uint3
     }
 }
 
-// Callback when a command transfer is complete — sends the next command after a 2-second delay
+// Callback when a command transfer is complete — schedules the next command
+// after CMD_DELAY_MS via a non-blocking deadline stored in g_next_cmd_time.
 void transfer_complete_cb(tuh_xfer_t *xfer)
 {
     printf("Fastboot command completed. Result: %d, actual_len: %d\n", xfer->result, xfer->actual_len);
@@ -228,9 +239,9 @@ void transfer_complete_cb(tuh_xfer_t *xfer)
     g_cmd_index++;
     if (g_cmd_index < g_cmd_count)
     {
-        printf("Waiting 2 seconds before sending next command...\n");
-        sleep_ms(2000);
-        send_fastboot_cmd(g_dev_addr, g_ep_addr, g_cmds[g_cmd_index], strlen(g_cmds[g_cmd_index]));
+        printf("Waiting %d ms before sending next command...\n", CMD_DELAY_MS);
+        g_next_cmd_time = make_timeout_time_ms(CMD_DELAY_MS);
+        g_cmd_pending   = true;
     }
     else
     {
@@ -259,6 +270,15 @@ int main()
     {
         // TinyUSB host task must be called regularly
         tuh_task();
+
+        // Non-blocking inter-command delay: dispatch the next command once
+        // the deadline set in transfer_complete_cb has elapsed.
+        if (g_cmd_pending && time_reached(g_next_cmd_time))
+        {
+            g_cmd_pending = false;
+            send_fastboot_cmd(g_dev_addr, g_ep_addr, g_cmds[g_cmd_index], strlen(g_cmds[g_cmd_index]));
+        }
+
         // Add a delay to reduce CPU usage
         sleep_ms(100);
     }
