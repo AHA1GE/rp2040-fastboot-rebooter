@@ -1,0 +1,52 @@
+name: Reusable Build Artifacts
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake \
+            ninja-build \
+            gcc-arm-none-eabi \
+            libnewlib-arm-none-eabi \
+            libstdc++-arm-none-eabi-newlib
+
+      - name: Checkout Pico SDK
+        uses: actions/checkout@v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: 2.0.0
+          path: pico-sdk
+          submodules: recursive
+
+      - name: Configure project
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+        run: cmake -S . -B build-ci -G Ninja
+
+      - name: Build firmware artifacts
+        run: cmake --build build-ci
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fastboot_rebooter-artifacts-${{ github.run_number }}-${{ github.sha }}
+          path: |
+            build-ci/fastboot_rebooter.bin
+            build-ci/fastboot_rebooter.elf
+            build-ci/fastboot_rebooter.uf2
+          if-no-files-found: error
