@@ -1,0 +1,3 @@
+/* Auto-generated from FASTBOOTCMDS.txt — do not edit directly */
+#pragma once
+static const char FASTBOOT_CMDS[] = "@FASTBOOT_CMDS_ESC@";

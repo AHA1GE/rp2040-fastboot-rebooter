@@ -1,15 +1,68 @@
 #include "pico/stdlib.h"
 #include "tusb.h"
+#include "fastboot_cmds.h"
+#include <string.h>
 
-#define REBOOT_CMD "reboot\x00"
-#define REBOOT_CMD_LEN (sizeof(REBOOT_CMD) - 1)
+#define MAX_CMDS    32
+#define MAX_CMD_LEN 256
 
-// Transfer structure
-tuh_xfer_t xfer;
+// Delay between consecutive fastboot commands (milliseconds).
+// Edit this value before building to change the inter-command pause.
+#define CMD_DELAY_MS 2000
 
-void send_fastboot_reboot(uint8_t dev_addr, uint8_t ep_addr);
+// Parsed commands loaded from the embedded FASTBOOTCMDS.txt content
+static char g_cmds[MAX_CMDS][MAX_CMD_LEN];
+static int  g_cmd_count = 0;
+
+// State for sequential command dispatch
+static uint8_t g_dev_addr  = 0;
+static uint8_t g_ep_addr   = 0;
+static int     g_cmd_index = 0;
+
+// Non-blocking inter-command delay state.
+// When g_cmd_pending is true the main loop waits until g_next_cmd_time
+// before dispatching g_cmds[g_cmd_index].
+static volatile bool            g_cmd_pending   = false;
+static volatile absolute_time_t g_next_cmd_time;
+
+// Forward declarations
+void send_fastboot_cmd(uint8_t dev_addr, uint8_t ep_addr, const char *cmd, uint32_t cmd_len);
 void transfer_complete_cb(tuh_xfer_t *xfer);
 void descriptor_complete_cb(tuh_xfer_t *xfer);
+
+// Parse the embedded FASTBOOT_CMDS string (newline-delimited) into g_cmds[]
+static void parse_fastboot_cmds(void)
+{
+    const char *src = FASTBOOT_CMDS;
+    int cmd_idx  = 0;
+    int char_idx = 0;
+
+    while (*src && cmd_idx < MAX_CMDS)
+    {
+        if (*src == '\n')
+        {
+            if (char_idx > 0)
+            {
+                g_cmds[cmd_idx][char_idx] = '\0';
+                cmd_idx++;
+                char_idx = 0;
+            }
+        }
+        else if (*src != '\r' && char_idx < MAX_CMD_LEN - 1)
+        {
+            g_cmds[cmd_idx][char_idx++] = *src;
+        }
+        src++;
+    }
+    // Handle last line without a trailing newline
+    if (char_idx > 0 && cmd_idx < MAX_CMDS)
+    {
+        g_cmds[cmd_idx][char_idx] = '\0';
+        cmd_idx++;
+    }
+    g_cmd_count = cmd_idx;
+    printf("Loaded %d fastboot command(s) from FASTBOOTCMDS.txt\n", g_cmd_count);
+}
 
 // Callback when a device is mounted (connected)
 void tuh_mount_cb(uint8_t dev_addr)
@@ -95,9 +148,16 @@ void descriptor_complete_cb(tuh_xfer_t *xfer)
 
     if (ep_addr != 0)
     {
-        printf("Sending Fastboot reboot command to device %d's endpoint %d\n", dev_addr, ep_addr);
-        // Send the fastboot reboot command
-        send_fastboot_reboot(dev_addr, ep_addr);
+        if (g_cmd_count == 0)
+        {
+            printf("No fastboot commands to send.\n");
+            return;
+        }
+        printf("Sending fastboot commands to device %d's endpoint 0x%02x\n", dev_addr, ep_addr);
+        g_dev_addr  = dev_addr;
+        g_ep_addr   = ep_addr;
+        g_cmd_index = 0;
+        send_fastboot_cmd(dev_addr, ep_addr, g_cmds[0], strlen(g_cmds[0]));
     }
     else
     {
@@ -105,42 +165,87 @@ void descriptor_complete_cb(tuh_xfer_t *xfer)
     }
 }
 
-// Send the fastboot reboot command to the device
-void send_fastboot_reboot(uint8_t dev_addr, uint8_t ep_addr)
+// Send a single fastboot command to the device
+void send_fastboot_cmd(uint8_t dev_addr, uint8_t ep_addr, const char *cmd, uint32_t cmd_len)
 {
+    // Static buffer — must remain valid until transfer_complete_cb fires
+    static uint8_t cmd_buf[MAX_CMD_LEN + 1];
+
+    if (cmd_len > MAX_CMD_LEN)
+    {
+        printf("Command too long (%lu bytes), skipping: %s\n", (unsigned long)cmd_len, cmd);
+
+        // Advance to the next command so the dispatcher does not get stuck
+        g_cmd_index++;
+        if (g_cmd_index < g_cmd_count)
+        {
+            // Attempt to send the next command in the sequence
+            send_fastboot_cmd(dev_addr, ep_addr, g_cmds[g_cmd_index], strlen(g_cmds[g_cmd_index]));
+        }
+        else
+        {
+            printf("All fastboot commands executed (no more commands after skipping overlong one).\n");
+        }
+        return;
+    }
+
+    memcpy(cmd_buf, cmd, cmd_len);
+    cmd_buf[cmd_len] = '\0'; // Append null byte to match fastboot protocol behaviour
+
     tuh_xfer_t xfer;
-    uint8_t cmd[] = REBOOT_CMD;
+    xfer.daddr       = dev_addr;
+    xfer.ep_addr     = ep_addr;
+    xfer.result      = 0;
+    xfer.actual_len  = 0;
+    xfer.buffer      = cmd_buf;
+    xfer.buflen      = cmd_len + 1; // Include the null byte
+    xfer.complete_cb = transfer_complete_cb;
+    xfer.user_data   = 0;
 
-    // Initialize the transfer structure
-    xfer.daddr = dev_addr;                   // Device address
-    xfer.ep_addr = ep_addr;                  // Endpoint address
-    xfer.result = 0;                         // Initialize result, may be updated by the transfer
-    xfer.actual_len = 0;                     // Actual length of data transferred, initialized to 0
-    xfer.buffer = cmd;                       // Pointer to the data buffer
-    xfer.buflen = REBOOT_CMD_LEN;            // Length of the data buffer
-    xfer.complete_cb = transfer_complete_cb; // Callback function
-    xfer.user_data = 0;                      // User data, initialized to 0
-
-    // Send the command using tuh_edpt_xfer
+    printf("Sending fastboot command [%d/%d]: %s\n", g_cmd_index + 1, g_cmd_count, cmd);
     if (tuh_edpt_xfer(&xfer))
     {
-        printf("Fastboot reboot command sent to device %d's endpoint %d\n", dev_addr, ep_addr);
+        printf("Fastboot command sent to device %d's endpoint 0x%02x\n", dev_addr, ep_addr);
     }
     else
     {
-        printf("Failed to send Fastboot reboot command to device %d's endpoint %d. Data:\n", dev_addr, ep_addr);
-        // Print the structure for debugging
-        printf("daddr: %d, ep_addr: %d, result: %d, actual_len: %d, buffer: %s, buflen: %d\n", xfer.daddr, xfer.ep_addr, xfer.result, xfer.actual_len, (char *)xfer.buffer, xfer.buflen);
+        printf("Failed to send fastboot command to device %d's endpoint 0x%02x, skipping.\n", dev_addr, ep_addr);
+
+        // No completion callback will fire on failure, so advance the index and
+        // dispatch the next command here to avoid stalling the sequence.
+        g_cmd_index++;
+        if (g_cmd_index < g_cmd_count)
+        {
+            send_fastboot_cmd(g_dev_addr, g_ep_addr, g_cmds[g_cmd_index], strlen(g_cmds[g_cmd_index]));
+        }
+        else
+        {
+            printf("All fastboot commands executed.\n");
+        }
     }
 }
 
-// Callback when the command is sent
+// Callback when a command transfer is complete — schedules the next command
+// after CMD_DELAY_MS via a non-blocking deadline stored in g_next_cmd_time.
 void transfer_complete_cb(tuh_xfer_t *xfer)
 {
-    printf("Fastboot reboot completed. Result: %d, actual_len: %d\n", xfer->result, xfer->actual_len);
+    printf("Fastboot command completed. Result: %d, actual_len: %d\n", xfer->result, xfer->actual_len);
     if (xfer->result != XFER_RESULT_SUCCESS)
     {
         printf("Transfer failed with error code %d\n", xfer->result);
+        return;
+    }
+
+    g_cmd_index++;
+    if (g_cmd_index < g_cmd_count)
+    {
+        printf("Waiting %d ms before sending next command...\n", CMD_DELAY_MS);
+        g_next_cmd_time = make_timeout_time_ms(CMD_DELAY_MS);
+        g_cmd_pending   = true;
+    }
+    else
+    {
+        printf("All fastboot commands executed.\n");
     }
 }
 
@@ -156,14 +261,28 @@ int main()
     printf("init DONE! Waiting for debug......\n");
     sleep_ms(3000); // Sleep for 3 seconds for UART initialization
     printf("READY!\n");
+
+    // Load fastboot commands from the embedded FASTBOOTCMDS.txt content
+    parse_fastboot_cmds();
+
     // Main loop
     while (1)
     {
         // TinyUSB host task must be called regularly
         tuh_task();
+
+        // Non-blocking inter-command delay: dispatch the next command once
+        // the deadline set in transfer_complete_cb has elapsed.
+        if (g_cmd_pending && time_reached(g_next_cmd_time))
+        {
+            g_cmd_pending = false;
+            send_fastboot_cmd(g_dev_addr, g_ep_addr, g_cmds[g_cmd_index], strlen(g_cmds[g_cmd_index]));
+        }
+
         // Add a delay to reduce CPU usage
         sleep_ms(100);
     }
 
     return 0;
 }
+
