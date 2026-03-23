@@ -164,6 +164,18 @@ void send_fastboot_cmd(uint8_t dev_addr, uint8_t ep_addr, const char *cmd, uint3
     if (cmd_len > MAX_CMD_LEN)
     {
         printf("Command too long (%lu bytes), skipping: %s\n", (unsigned long)cmd_len, cmd);
+
+        // Advance to the next command so the dispatcher does not get stuck
+        g_cmd_index++;
+        if (g_cmd_index < g_cmd_count)
+        {
+            // Attempt to send the next command in the sequence
+            send_fastboot_cmd(dev_addr, ep_addr, g_cmds[g_cmd_index], strlen(g_cmds[g_cmd_index]));
+        }
+        else
+        {
+            printf("All fastboot commands executed (no more commands after skipping overlong one).\n");
+        }
         return;
     }
 
