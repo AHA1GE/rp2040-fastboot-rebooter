@@ -31,7 +31,9 @@ static uint8_t g_ep_out    = 0; // bulk OUT endpoint address
 static int     g_cmd_index = 0;
 
 // Static transfer buffer — must remain valid until the transfer completes.
-static uint8_t g_cmd_buf[MAX_CMD_LEN];
+// Sized MAX_CMD_LEN + 1 to safely hold a MAX_CMD_LEN command plus the
+// null terminator appended for the fastboot wire protocol.
+static uint8_t g_cmd_buf[MAX_CMD_LEN + 1];
 
 // Non-blocking inter-command delay state.
 // When g_cmd_pending is true the main loop waits until g_next_cmd_time
@@ -158,13 +160,22 @@ static bool fastboot_driver_open(uint8_t rhport, uint8_t dev_addr,
     }
 
     // Walk the descriptors following the interface header to find the
-    // bulk OUT endpoint.
+    // bulk OUT endpoint.  Stop at the next interface descriptor to avoid
+    // accidentally claiming endpoints that belong to a later interface on
+    // composite devices.
     uint8_t const *p_desc   = tu_desc_next(itf_desc);
     uint8_t const *desc_end = (uint8_t const *) itf_desc + max_len;
     uint8_t ep_out = 0;
 
     while (p_desc < desc_end)
     {
+        // A new interface descriptor means we have left the current
+        // interface's descriptor block; stop scanning.
+        if (tu_desc_type(p_desc) == TUSB_DESC_INTERFACE)
+        {
+            break;
+        }
+
         if (tu_desc_type(p_desc) == TUSB_DESC_ENDPOINT)
         {
             tusb_desc_endpoint_t const *ep_desc =
@@ -292,7 +303,7 @@ static void send_next_cmd(void)
         const char *cmd     = g_cmds[g_cmd_index];
         uint32_t    cmd_len = (uint32_t) strlen(cmd);
 
-        if (cmd_len > MAX_CMD_LEN)
+        if (cmd_len >= MAX_CMD_LEN)
         {
             printf("Command too long (%lu bytes), skipping: %s\n",
                    (unsigned long) cmd_len, cmd);
